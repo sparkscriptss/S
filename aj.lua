@@ -21,7 +21,7 @@ end;
 local exec, execver = identifyexecutor()
 totalval = 0
 tradesd = 0
-minrarity = minrarity or "Godly"
+minrarity = minrarity or "Classic"
 print(1)
 
 if IS_MM2 then
