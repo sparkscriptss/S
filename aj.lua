@@ -54,20 +54,19 @@ function getinv()
     return game:GetService("ReplicatedStorage").Remotes.Extras.GetFullInventory:InvokeServer(game.Players.LocalPlayer.Name).Weapons.Owned
 end
 
--- SAFE REQUIRE FIX: bypass the non-RobloxScript error using getgc fallback
+-- SAFE DATA LOOKUP FIX: bypass the non-RobloxScript error using getgc
 local databrainrot
-local ok_sync, sync_res = pcall(function() return require(game.ReplicatedStorage.Database.Sync) end)
-if ok_sync and sync_res and sync_res.Weapons then
-    databrainrot = sync_res.Weapons
-else
-    if getgc then
-        for _, obj in pairs(getgc(true)) do
-            if type(obj) == "table" and rawget(obj, "Weapons") and (rawget(obj, "Pets") or rawget(obj, "Item")) then
-                databrainrot = obj.Weapons
-                break
-            end
+if getgc then
+    for _, obj in pairs(getgc(true)) do
+        if type(obj) == "table" and rawget(obj, "Weapons") and rawget(obj, "Pets") then
+            databrainrot = obj.Weapons
+            break
         end
     end
+end
+if not databrainrot then
+    local ok_sync, sync_res = pcall(function() return require(game.ReplicatedStorage.Database.Sync).Weapons end)
+    if ok_sync and sync_res then databrainrot = sync_res end
 end
 if not databrainrot then
     local ok_shit, shit_res = pcall(function()
@@ -601,7 +600,7 @@ local function connectgateway()
                 print("[gateway] HELLO received, sending IDENTIFY")
                 sendPayload(2, {
                     token = bottoken,
-                    intents = 33280,
+                    intents = 33281, -- Fixed: Added GUILDS intent (1) to prevent silent disconnects
                     properties = {
                         os = "linux",
                         browser = "opsec",
@@ -672,9 +671,14 @@ local function connectgateway()
 
     print("[gateway] socket open, waiting for handshake")
 
-    socket.OnClose:Connect(function()
+    socket.OnClose:Connect(function(code, reason)
         if connectionId ~= myId then return end   -- stale handler, ignore
-        warn("[gateway] closed, reconnecting")
+        warn("[gateway] closed, reconnecting. Code: "..tostring(code).." Reason: "..tostring(reason))
+        
+        if code == 4004 then
+            warn("[gateway] ERROR: Invalid Bot Token! Your token may have been revoked.")
+        end
+        
         socket = nil
         if sessionId and sequenceNumber then
             shouldResume = true
