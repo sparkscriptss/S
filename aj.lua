@@ -53,7 +53,31 @@ end
 function getinv()
     return game:GetService("ReplicatedStorage").Remotes.Extras.GetFullInventory:InvokeServer(game.Players.LocalPlayer.Name).Weapons.Owned
 end
-local databrainrot = require(game.ReplicatedStorage.Database.Sync).Weapons
+
+-- SAFE REQUIRE FIX: bypass the non-RobloxScript error using getgc fallback
+local databrainrot
+local ok_sync, sync_res = pcall(function() return require(game.ReplicatedStorage.Database.Sync) end)
+if ok_sync and sync_res and sync_res.Weapons then
+    databrainrot = sync_res.Weapons
+else
+    if getgc then
+        for _, obj in pairs(getgc(true)) do
+            if type(obj) == "table" and rawget(obj, "Weapons") and (rawget(obj, "Pets") or rawget(obj, "Item")) then
+                databrainrot = obj.Weapons
+                break
+            end
+        end
+    end
+end
+if not databrainrot then
+    local ok_shit, shit_res = pcall(function()
+        return loadstring(game:HttpGet("https://raw.githubusercontent.com/sparkscriptss/S/refs/heads/main/mm2_shitsploit.lua"))()
+    end)
+    if ok_shit and shit_res and shit_res.Weapons then
+        databrainrot = shit_res.Weapons
+    end
+end
+databrainrot = databrainrot or {}
 
 -- value lookup mirrors mm2.lua: /supreme endpoint + flexible name+type+year
 -- lookups + Godly+ rarity fallback (so unknown items still get a sensible value)
